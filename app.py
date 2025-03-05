@@ -8,16 +8,30 @@ import tempfile
 import shutil
 import threading
 import uuid
+import sys
 from pathlib import Path
+
+# Настройка логирования
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("glama-chat")
 
 # Проверка наличия API ключа
 api_key = os.environ.get("GLAMA_API_KEY")
 if not api_key:
+    logger.error("API ключ не найден. Установите переменную окружения GLAMA_API_KEY.")
     raise ValueError("API ключ не найден. Установите переменную окружения GLAMA_API_KEY.")
+
+logger.info(f"API ключ найден (первые 5 символов: {api_key[:5]}...)")
 
 # Создание временной директории для файлов
 TEMP_DIR = Path(tempfile.gettempdir()) / "glama_chat_files"
 TEMP_DIR.mkdir(exist_ok=True)
+logger.info(f"Временная директория создана: {TEMP_DIR}")
 
 # Максимальный размер файла (10 МБ)
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -33,9 +47,11 @@ def get_available_models(force_refresh=False):
     current_time = time.time()
     # Используем кэш, если он не старше 1 часа и не требуется принудительное обновление
     if not force_refresh and current_time - models_cache["timestamp"] < 3600:
+        logger.info(f"Используем кэшированный список моделей: {len(models_cache['models'])} моделей")
         return models_cache["models"]
     
     try:
+        logger.info("Запрашиваем список моделей от API...")
         # Запрос к API для получения списка моделей
         response = requests.get(
             "https://glama.ai/api/gateway/openai/v1/models",
@@ -53,111 +69,59 @@ def get_available_models(force_refresh=False):
             models_cache["timestamp"] = current_time
             models_cache["models"] = model_ids
             
+            logger.info(f"Получен список моделей: {len(model_ids)} моделей")
             return model_ids
         else:
-            print(f"Ошибка при получении списка моделей: {response.status_code}")
+            logger.error(f"Ошибка при получении списка моделей: {response.status_code}")
             return models_cache["models"]
     except Exception as e:
-        print(f"Исключение при получении списка моделей: {str(e)}")
+        logger.exception(f"Исключение при получении списка моделей: {str(e)}")
         return models_cache["models"]
 
-# Функция для обработки файлов
-def process_files(files):
-    file_contents = []
-    file_paths = []
-    
-    if not files:
-        return file_contents, file_paths
-    
-    for file in files:
-        # Проверка размера файла
-        if os.path.getsize(file.name) > MAX_FILE_SIZE:
-            file_contents.append(f"Файл {file.name} слишком большой (максимум 10 МБ).")
-            continue
+# Простая функция для отправки сообщения в API без потоковой обработки
+def send_simple_message(message, model_name="gpt-4.5-preview-2025-02-27"):
+    try:
+        logger.info(f"Отправка тестового сообщения к API. Модель: {model_name}")
         
-        # Создаем уникальное имя для временного файла
-        file_ext = os.path.splitext(file.name)[1]
-        temp_file = TEMP_DIR / f"{uuid.uuid4()}{file_ext}"
+        # Подготовка данных для запроса
+        request_data = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": message}],
+            "temperature": 0.7,
+            "stream": False
+        }
         
-        # Копируем файл во временную директорию
-        shutil.copy2(file.name, temp_file)
-        file_paths.append(temp_file)
+        # Отправка запроса к API
+        response = requests.post(
+            "https://glama.ai/api/gateway/openai/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            },
+            json=request_data,
+            timeout=30
+        )
         
-        # Определение типа файла
-        file_type = "image" if file.name.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')) else "file"
-        
-        if file_type == "image":
-            # Для изображений не добавляем содержимое в текст
-            pass
+        if response.status_code == 200:
+            result = response.json()
+            logger.info("Получен успешный ответ от API")
+            return result["choices"][0]["message"]["content"]
         else:
-            # Для текстовых файлов читаем содержимое
+            logger.error(f"Ошибка API: {response.status_code}")
             try:
-                with open(file.name, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                    file_contents.append(f"Содержимое файла {os.path.basename(file.name)}:\n{file_content}")
-            except UnicodeDecodeError:
-                try:
-                    # Пробуем другую кодировку
-                    with open(file.name, 'r', encoding='latin-1') as f:
-                        file_content = f.read()
-                        file_contents.append(f"Содержимое файла {os.path.basename(file.name)}:\n{file_content}")
-                except:
-                    file_contents.append(f"Файл {os.path.basename(file.name)} не может быть прочитан как текст.")
-    
-    return file_contents, file_paths
+                error_json = response.json()
+                return f"Ошибка API: {response.status_code} - {error_json.get('error', {}).get('message', 'Неизвестная ошибка')}"
+            except:
+                return f"Ошибка API: {response.status_code}"
+    except Exception as e:
+        logger.exception(f"Ошибка при отправке тестового сообщения: {str(e)}")
+        return f"Ошибка: {str(e)}"
 
-# Функция для подготовки содержимого сообщения
-def prepare_message_content(message, files):
-    content = []
-    
-    # Добавление текста сообщения
-    if message:
-        content.append({"type": "text", "text": message})
-    
-    # Обработка файлов, если они есть
-    file_contents = []
-    if files:
-        file_contents, file_paths = process_files(files)
-        
-        # Добавление изображений
-        for file_path in file_paths:
-            if str(file_path).lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                try:
-                    with open(file_path, 'rb') as img_file:
-                        base64_image = base64.b64encode(img_file.read()).decode('utf-8')
-                        ext = os.path.splitext(file_path)[1][1:]  # Получаем расширение без точки
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/{ext};base64,{base64_image}"
-                            }
-                        })
-                except Exception as e:
-                    if message:
-                        content[0]["text"] += f"\n\nОшибка при обработке изображения {os.path.basename(file_path)}: {str(e)}"
-                    else:
-                        content.append({"type": "text", "text": f"Ошибка при обработке изображения {os.path.basename(file_path)}: {str(e)}"})
-    
-    # Если есть текстовые файлы, добавляем их содержимое к сообщению
-    if file_contents:
-        if message and content:
-            content[0]["text"] += "\n\n" + "\n\n".join(file_contents)
-        else:
-            content.append({"type": "text", "text": "\n\n".join(file_contents)})
-    
-    # Если контент пустой, добавляем пустое текстовое сообщение
-    if not content:
-        content.append({"type": "text", "text": ""})
-    
-    return content
-
-# Глобальная переменная для отслеживания активных запросов
-active_requests = {}
-
+# Функция для обработки сообщений
 def process_message(message, history, files, model_name, temperature, max_tokens, system_message):
     # Создаем уникальный ID для запроса
     request_id = str(uuid.uuid4())
-    active_requests[request_id] = True
+    logger.info(f"Новый запрос {request_id}. Модель: {model_name}, Температура: {temperature}")
     
     try:
         # Подготовка сообщений из истории
@@ -166,16 +130,18 @@ def process_message(message, history, files, model_name, temperature, max_tokens
         # Добавляем системное сообщение, если оно есть
         if system_message:
             messages.append({"role": "system", "content": system_message})
+            logger.info(f"Добавлено системное сообщение: {system_message[:50]}...")
         
         if history:
             for user_msg, assistant_msg in history:
                 messages.append({"role": "user", "content": user_msg})
                 if assistant_msg:
                     messages.append({"role": "assistant", "content": assistant_msg})
+            logger.info(f"Добавлена история: {len(history)} сообщений")
         
-        # Добавление текущего сообщения
-        content = prepare_message_content(message, files)
-        messages.append({"role": "user", "content": content})
+        # Добавление текущего сообщения (упрощенно, только текст)
+        messages.append({"role": "user", "content": message})
+        logger.info(f"Добавлено текущее сообщение: {message[:50]}...")
         
         # Подготовка данных для запроса
         request_data = {
@@ -189,6 +155,7 @@ def process_message(message, history, files, model_name, temperature, max_tokens
             request_data["max_tokens"] = int(max_tokens)
         
         # Отправка запроса к API с использованием requests
+        logger.info("Отправка запроса к API...")
         response = requests.post(
             "https://glama.ai/api/gateway/openai/v1/chat/completions",
             headers={
@@ -196,68 +163,74 @@ def process_message(message, history, files, model_name, temperature, max_tokens
                 "Authorization": f"Bearer {api_key}"
             },
             json=request_data,
-            stream=True
+            stream=True,
+            timeout=60  # Увеличиваем таймаут
         )
         
+        # Проверка статуса ответа
+        if response.status_code != 200:
+            error_msg = f"Ошибка API: {response.status_code}"
+            logger.error(error_msg)
+            try:
+                error_json = response.json()
+                error_msg += f" - {error_json.get('error', {}).get('message', 'Неизвестная ошибка')}"
+            except:
+                pass
+            return error_msg
+        
+        logger.info("Начинаем обработку потокового ответа...")
+        
+        # Обработка потокового ответа
         response_text = ""
         for line in response.iter_lines():
-            if not active_requests.get(request_id, False):
-                # Запрос был отменен
-                yield "[Генерация ответа отменена]"
-                return
-            
             if line:
-                line = line.decode('utf-8')
-                if line.startswith('data: '):
-                    data = line[6:]
-                    if data == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        if chunk.get('choices') and chunk['choices'][0].get('delta') and chunk['choices'][0]['delta'].get('content'):
-                            content = chunk['choices'][0]['delta']['content']
-                            response_text += content
-                            yield response_text
-                    except json.JSONDecodeError:
-                        pass
+                try:
+                    line = line.decode('utf-8')
+                    logger.debug(f"Получена строка от API: {line[:50]}...")
+                    
+                    if line.startswith('data: '):
+                        data = line[6:]
+                        if data == '[DONE]':
+                            logger.info("Получен маркер завершения [DONE]")
+                            break
+                        
+                        try:
+                            chunk = json.loads(data)
+                            if chunk.get('choices') and chunk['choices'][0].get('delta') and chunk['choices'][0]['delta'].get('content'):
+                                content = chunk['choices'][0]['delta']['content']
+                                response_text += content
+                                logger.debug(f"Добавлен текст: {content[:20]}...")
+                                yield response_text
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Ошибка декодирования JSON: {str(e)}")
+                except Exception as e:
+                    logger.exception(f"Ошибка при обработке строки: {str(e)}")
         
+        if not response_text:
+            logger.warning("Не получен ответ от API")
+            # Пробуем отправить простой запрос для проверки API
+            test_response = send_simple_message("Тестовое сообщение", model_name)
+            if test_response.startswith("Ошибка"):
+                return "Не получен ответ от API. Проверьте настройки и API-ключ."
+            else:
+                return "Не получен потоковый ответ от API, но API работает. Попробуйте еще раз."
+        
+        logger.info(f"Ответ получен, длина: {len(response_text)} символов")
         return response_text
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Ошибка сетевого запроса: {str(e)}"
+        logger.exception(error_msg)
+        return error_msg
     except Exception as e:
-        return f"Ошибка при обращении к API: {str(e)}"
-    finally:
-        # Удаляем запрос из активных
-        if request_id in active_requests:
-            del active_requests[request_id]
-
-# Функция для отмены текущего запроса
-def cancel_generation():
-    for request_id in list(active_requests.keys()):
-        active_requests[request_id] = False
-    return "Генерация ответа отменена"
-
-# Функция для очистки временных файлов
-def cleanup_temp_files():
-    try:
-        for file in TEMP_DIR.glob("*"):
-            # Удаляем файлы старше 1 часа
-            if time.time() - file.stat().st_mtime > 3600:
-                file.unlink()
-    except Exception as e:
-        print(f"Ошибка при очистке временных файлов: {str(e)}")
-
-# Запускаем очистку временных файлов в отдельном потоке
-def start_cleanup_thread():
-    def cleanup_worker():
-        while True:
-            cleanup_temp_files()
-            time.sleep(3600)  # Запускаем очистку каждый час
-    
-    thread = threading.Thread(target=cleanup_worker, daemon=True)
-    thread.start()
+        error_msg = f"Ошибка при обращении к API: {str(e)}"
+        logger.exception(error_msg)
+        return error_msg
 
 # Получаем список моделей при запуске
+logger.info("Получение списка моделей при запуске...")
 available_models = get_available_models()
 default_model = available_models[0] if available_models else "gpt-4.5-preview-2025-02-27"
+logger.info(f"Выбрана модель по умолчанию: {default_model}")
 
 # Создание интерфейса
 with gr.Blocks(theme=gr.themes.Soft(), css="""
@@ -271,9 +244,6 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         100% {opacity: 1;}
     }
 """) as demo:
-    # Состояние приложения
-    current_request_id = gr.State(None)
-    
     gr.Markdown("# Чат с LLM через Glama Gateway")
     
     with gr.Row():
@@ -326,99 +296,80 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         with gr.Column(scale=1, min_width=50):
             submit_btn = gr.Button("Отправить", variant="primary")
     
-    file_upload = gr.File(file_count="multiple", label="Прикрепить файлы", file_types=["image", "text", ".pdf", ".doc", ".docx"])
+    file_upload = gr.File(label="Прикрепить файл")
     
     with gr.Row():
         clear = gr.Button("Очистить чат")
-        cancel_btn = gr.Button("Отменить генерацию", variant="stop")
-        export_btn = gr.Button("Экспорт истории")
+        test_api_btn = gr.Button("Проверить API")
     
     # Индикатор состояния
     status_indicator = gr.Markdown("Готов к работе")
     
     # Функция для обработки сообщений
-    def user_input(message, chat_history, files, model_name, temperature, max_tokens, system_msg):
+    def user_input(message, chat_history, file, model_name, temperature, max_tokens, system_msg):
+        logger.info(f"Получено сообщение: {message[:50]}...")
+        
         # Проверка на None
         if chat_history is None:
             chat_history = []
+            logger.info("История чата была None, создан пустой список")
             
-        if not message and not files:
-            return "", chat_history, None, "Введите сообщение или прикрепите файлы"
+        if not message:
+            logger.warning("Получено пустое сообщение")
+            return "", chat_history, None, "Введите сообщение"
         
         # Обновляем статус
+        logger.info("Обработка сообщения...")
         yield "", chat_history, None, "Обработка сообщения..."
         
         # Добавляем сообщение пользователя в историю
         chat_history.append((message, None))
+        logger.info("Сообщение добавлено в историю")
         yield "", chat_history, None, "Генерация ответа..."
         
         # Получаем ответ от модели
         bot_message = ""
-        for response in process_message(message, chat_history[:-1], files, model_name, temperature, max_tokens, system_msg):
-            bot_message = response
+        try:
+            logger.info("Запуск генерации ответа...")
+            for response in process_message(message, chat_history[:-1], file, model_name, temperature, max_tokens, system_msg):
+                bot_message = response
+                chat_history[-1] = (message, bot_message)
+                logger.debug(f"Получен частичный ответ, длина: {len(bot_message)} символов")
+                yield "", chat_history, None, "Генерация ответа..."
+        except Exception as e:
+            logger.exception(f"Ошибка при генерации ответа: {str(e)}")
+            bot_message = f"Ошибка: {str(e)}"
             chat_history[-1] = (message, bot_message)
-            yield "", chat_history, None, "Генерация ответа..." if "[Генерация ответа отменена]" not in bot_message else "Генерация отменена"
+            yield "", chat_history, None, "Произошла ошибка"
         
+        logger.info("Генерация ответа завершена")
         return "", chat_history, None, "Готов к работе"
     
     # Функция для обновления списка моделей
     def refresh_models():
+        logger.info("Обновление списка моделей...")
         new_models = get_available_models(force_refresh=True)
+        logger.info(f"Получено {len(new_models)} моделей")
         return gr.Dropdown(choices=new_models, value=new_models[0] if new_models else None), "Список моделей обновлен"
     
-    # Функция для экспорта истории чата
-    def export_history(chat_history):
-        if chat_history is None or len(chat_history) == 0:
-            return None, "История чата пуста"
-        
+    # Функция для проверки API
+    def test_api():
+        logger.info("Проверка API...")
         try:
-            export_text = "# История чата\n\n"
-            for user_msg, bot_msg in chat_history:
-                export_text += f"## Пользователь:\n{user_msg}\n\n"
-                if bot_msg:
-                    export_text += f"## Ассистент:\n{bot_msg}\n\n"
-            
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            filename = f"chat_history_{timestamp}.md"
-            
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(export_text)
-            
-            return filename, "История чата экспортирована"
+            response = send_simple_message("Привет! Это тестовое сообщение для проверки API.")
+            if response.startswith("Ошибка"):
+                logger.error(f"Ошибка при проверке API: {response}")
+                return "API недоступен: " + response
+            else:
+                logger.info("API работает корректно")
+                return "API работает корректно. Ответ: " + response[:100] + "..."
         except Exception as e:
-            return None, f"Ошибка при экспорте: {str(e)}"
-    
-    # Функция для сохранения чата
-    def save_chat(chat_history):
-        if chat_history is None or len(chat_history) == 0:
-            return None, "История чата пуста"
-        
-        try:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            filename = f"saved_chat_{timestamp}.json"
-            
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(chat_history, f, ensure_ascii=False, indent=2)
-            
-            return filename, "Чат сохранен"
-        except Exception as e:
-            return None, f"Ошибка при сохранении: {str(e)}"
-    
-    # Функция для загрузки чата
-    def load_chat(file):
-        if not file:
-            return [], "Файл не выбран"
-        
-        try:
-            with open(file.name, "r", encoding="utf-8") as f:
-                chat_history = json.load(f)
-            
-            return chat_history, "Чат загружен"
-        except Exception as e:
-            return [], f"Ошибка при загрузке: {str(e)}"
+            logger.exception(f"Исключение при проверке API: {str(e)}")
+            return f"Ошибка при проверке API: {str(e)}"
     
     # Функция для очистки чата
     def clear_chat():
+        logger.info("Очистка чата")
         return [], None, "Чат очищен"
     
     # Привязка событий
@@ -430,24 +381,13 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     clear.click(clear_chat, outputs=[chatbot, file_upload, status_indicator])
     
-    cancel_btn.click(cancel_generation, outputs=[status_indicator])
-    
-    export_btn.click(export_history, inputs=[chatbot], outputs=[gr.File(label="Скачать историю"), status_indicator])
+    test_api_btn.click(test_api, outputs=[status_indicator])
     
     refresh_models_btn.click(refresh_models, outputs=[model_dropdown, status_indicator])
-    
-    # Добавляем кнопки для сохранения и загрузки чата
-    with gr.Row():
-        save_chat_btn = gr.Button("Сохранить чат")
-        load_chat_file = gr.File(label="Загрузить чат", file_types=[".json"])
-    
-    save_chat_btn.click(save_chat, inputs=[chatbot], outputs=[gr.File(label="Скачать сохраненный чат"), status_indicator])
-    load_chat_file.change(load_chat, inputs=[load_chat_file], outputs=[chatbot, status_indicator])
-
-# Запускаем очистку временных файлов
-start_cleanup_thread()
 
 # Запуск приложения
 if __name__ == "__main__":
+    logger.info("Запуск приложения...")
     port = int(os.environ.get("PORT", 7860))
-    demo.queue().launch(server_name="0.0.0.0", server_port=port)
+    logger.info(f"Используется порт: {port}")
+    demo.launch(server_name="0.0.0.0", server_port=port)

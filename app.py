@@ -309,7 +309,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
                     info="Ограничивает длину ответа модели"
                 )
     
-    chatbot = gr.Chatbot(height=500, show_copy_button=True, avatar_images=["👤", "🤖"])
+    chatbot = gr.Chatbot(height=500, show_copy_button=True)
     
     with gr.Row():
         with gr.Column(scale=8):

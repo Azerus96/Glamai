@@ -66,6 +66,9 @@ def process_files(files):
     file_contents = []
     file_paths = []
     
+    if not files:
+        return file_contents, file_paths
+    
     for file in files:
         # Проверка размера файла
         if os.path.getsize(file.name) > MAX_FILE_SIZE:
@@ -137,7 +140,7 @@ def prepare_message_content(message, files):
     
     # Если есть текстовые файлы, добавляем их содержимое к сообщению
     if file_contents:
-        if message:
+        if message and content:
             content[0]["text"] += "\n\n" + "\n\n".join(file_contents)
         else:
             content.append({"type": "text", "text": "\n\n".join(file_contents)})
@@ -164,10 +167,11 @@ def process_message(message, history, files, model_name, temperature, max_tokens
         if system_message:
             messages.append({"role": "system", "content": system_message})
         
-        for user_msg, assistant_msg in history:
-            messages.append({"role": "user", "content": user_msg})
-            if assistant_msg:
-                messages.append({"role": "assistant", "content": assistant_msg})
+        if history:
+            for user_msg, assistant_msg in history:
+                messages.append({"role": "user", "content": user_msg})
+                if assistant_msg:
+                    messages.append({"role": "assistant", "content": assistant_msg})
         
         # Добавление текущего сообщения
         content = prepare_message_content(message, files)
@@ -334,6 +338,10 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # Функция для обработки сообщений
     def user_input(message, chat_history, files, model_name, temperature, max_tokens, system_msg):
+        # Проверка на None
+        if chat_history is None:
+            chat_history = []
+            
         if not message and not files:
             return "", chat_history, None, "Введите сообщение или прикрепите файлы"
         
@@ -360,7 +368,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # Функция для экспорта истории чата
     def export_history(chat_history):
-        if not chat_history:
+        if chat_history is None or len(chat_history) == 0:
             return None, "История чата пуста"
         
         try:
@@ -382,7 +390,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     
     # Функция для сохранения чата
     def save_chat(chat_history):
-        if not chat_history:
+        if chat_history is None or len(chat_history) == 0:
             return None, "История чата пуста"
         
         try:
@@ -409,6 +417,10 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         except Exception as e:
             return [], f"Ошибка при загрузке: {str(e)}"
     
+    # Функция для очистки чата
+    def clear_chat():
+        return [], None, "Чат очищен"
+    
     # Привязка событий
     msg.submit(user_input, [msg, chatbot, file_upload, model_dropdown, temperature_slider, max_tokens_slider, system_message], 
                [msg, chatbot, file_upload, status_indicator])
@@ -416,7 +428,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
     submit_btn.click(user_input, [msg, chatbot, file_upload, model_dropdown, temperature_slider, max_tokens_slider, system_message], 
                     [msg, chatbot, file_upload, status_indicator])
     
-    clear.click(lambda: ([], None, "Чат очищен"), outputs=[chatbot, file_upload, status_indicator])
+    clear.click(clear_chat, outputs=[chatbot, file_upload, status_indicator])
     
     cancel_btn.click(cancel_generation, outputs=[status_indicator])
     

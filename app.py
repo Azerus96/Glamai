@@ -1,3 +1,6 @@
+# Обновленный код для app.py
+
+```python
 import os
 import gradio as gr
 from openai import OpenAI
@@ -290,7 +293,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
                     info="Ограничивает длину ответа модели"
                 )
     
-    chatbot = gr.Chatbot(height=500, show_copy_button=True, avatar_images=["👤", "🤖"])
+    chatbot = gr.Chatbot(height=500, show_copy_button=True, avatar_images=["👤", "🤖"], type="messages")
     
     with gr.Row():
         with gr.Column(scale=8):
@@ -309,7 +312,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         clear = gr.Button("Очистить чат")
         cancel_btn = gr.Button("Отменить генерацию", variant="stop")
         export_btn = gr.Button("Экспорт истории")
-
+    
     # Индикатор состояния
     status_indicator = gr.Markdown("Готов к работе")
     
@@ -346,6 +349,10 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         
         try:
             export_text = "# История чата\n\n"
+            for user_msg, bot_msg in chat_history:
+                export_text += f"## Пользователь:\n{user_msg}\n\n"
+                if bot_msg:
+                    export_text = "# История чата\n\n"
             for user_msg, bot_msg in chat_history:
                 export_text += f"## Пользователь:\n{user_msg}\n\n"
                 if bot_msg:
@@ -419,4 +426,4 @@ start_cleanup_thread()
 # Запуск приложения
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    demo.queue(concurrency_count=5).launch(server_name="0.0.0.0", server_port=port)
+    demo.queue().launch(server_name="0.0.0.0", server_port=port)

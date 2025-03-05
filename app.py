@@ -1,26 +1,19 @@
 import os
 import gradio as gr
-from openai import OpenAI
-import tempfile
-import base64
-import time
-import json
 import requests
+import json
+import time
+import base64
+import tempfile
 import shutil
 import threading
-from pathlib import Path
 import uuid
+from pathlib import Path
 
 # Проверка наличия API ключа
 api_key = os.environ.get("GLAMA_API_KEY")
 if not api_key:
     raise ValueError("API ключ не найден. Установите переменную окружения GLAMA_API_KEY.")
-
-# Инициализация клиента
-client = OpenAI(
-    base_url="https://glama.ai/api/gateway/openai/v1",
-    api_key=api_key
-)
 
 # Создание временной директории для файлов
 TEMP_DIR = Path(tempfile.gettempdir()) / "glama_chat_files"
@@ -180,23 +173,49 @@ def process_message(message, history, files, model_name, temperature, max_tokens
         content = prepare_message_content(message, files)
         messages.append({"role": "user", "content": content})
         
-        # Отправка запроса к API
-        response_text = ""
-        for chunk in client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=float(temperature),
-            max_tokens=int(max_tokens) if max_tokens else None,
+        # Подготовка данных для запроса
+        request_data = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": float(temperature),
+            "stream": True
+        }
+        
+        if max_tokens:
+            request_data["max_tokens"] = int(max_tokens)
+        
+        # Отправка запроса к API с использованием requests
+        response = requests.post(
+            "https://glama.ai/api/gateway/openai/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            },
+            json=request_data,
             stream=True
-        ):
+        )
+        
+        response_text = ""
+        for line in response.iter_lines():
             if not active_requests.get(request_id, False):
                 # Запрос был отменен
                 yield "[Генерация ответа отменена]"
                 return
             
-            if chunk.choices[0].delta.content:
-                response_text += chunk.choices[0].delta.content
-                yield response_text
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    data = line[6:]
+                    if data == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        if chunk.get('choices') and chunk['choices'][0].get('delta') and chunk['choices'][0]['delta'].get('content'):
+                            content = chunk['choices'][0]['delta']['content']
+                            response_text += content
+                            yield response_text
+                    except json.JSONDecodeError:
+                        pass
         
         return response_text
     except Exception as e:
@@ -290,7 +309,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
                     info="Ограничивает длину ответа модели"
                 )
     
-    chatbot = gr.Chatbot(height=500, show_copy_button=True, avatar_images=["👤", "🤖"], type="messages")
+    chatbot = gr.Chatbot(height=500, show_copy_button=True, avatar_images=["👤", "🤖"])
     
     with gr.Row():
         with gr.Column(scale=8):
@@ -346,10 +365,6 @@ with gr.Blocks(theme=gr.themes.Soft(), css="""
         
         try:
             export_text = "# История чата\n\n"
-            for user_msg, bot_msg in chat_history:
-                export_text += f"## Пользователь:\n{user_msg}\n\n"
-                if bot_msg:
-                    export_text = "# История чата\n\n"
             for user_msg, bot_msg in chat_history:
                 export_text += f"## Пользователь:\n{user_msg}\n\n"
                 if bot_msg:
